@@ -13,10 +13,27 @@ interface Article {
   url: string;
   publishedAt: string;
   description: string;
+  category?: string;
+}
+
+interface SectorImpact {
+  sector: string;
+  impact: 'Bullish' | 'Bearish' | 'Neutral' | 'Uncertain';
+  reasoning: string;
+  tickers: string[];
+  timeframe: 'Short-term' | 'Medium-term' | 'Long-term';
+  confidence: 'High' | 'Medium' | 'Low';
 }
 
 interface AnalyzedArticle extends Article {
   region: string;
+  analysis: {
+    summary: string;
+    sectors: SectorImpact[];
+    overallSentiment: 'Bullish' | 'Bearish' | 'Mixed' | 'Neutral';
+    keyInsight: string;
+  };
+  // Legacy fields for backward compatibility
   implications: {
     gold: string;
     silver: string;
@@ -41,84 +58,164 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Invalid articles data' }, { status: 400 });
     }
 
-    const prompt = `Analyze these political news headlines and provide macroeconomic implications.
+    // Process in batches to avoid token limits
+    const batchSize = 15;
+    const batches: Article[][] = [];
+    for (let i = 0; i < articles.length; i += batchSize) {
+      batches.push(articles.slice(i, i + batchSize));
+    }
 
-For each article, determine:
-1. Region (one of: Americas, Europe, Asia, Middle East, Africa)
-2. Impact implications for: Gold, Silver, Rare Minerals, Stock Markets
+    const allAnalyses: Array<{
+      index: number;
+      region: string;
+      summary: string;
+      sectors: SectorImpact[];
+      overallSentiment: string;
+      keyInsight: string;
+      gold: string;
+      silver: string;
+      rareMinerals: string;
+      stockMarkets: string;
+    }> = [];
 
-Use these impact levels: "Bullish", "Bearish", "Neutral", or "Uncertain"
+    for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
+      const batch = batches[batchIndex];
+      const startIndex = batchIndex * batchSize;
 
-Articles:
-${articles.map((a, i) => `${i + 1}. "${a.title}" - ${a.source}`).join('\n')}
+      const prompt = `You are a senior financial analyst specializing in macroeconomic and geopolitical analysis. Analyze these political/economic news headlines and provide detailed market impact assessments.
 
-Respond with ONLY valid JSON in this exact format, no markdown:
+For each article, provide:
+1. Region classification (Americas, Europe, Asia, Middle East, or Africa)
+2. A brief summary of market implications (1-2 sentences)
+3. Affected market sectors with detailed analysis
+4. Overall market sentiment
+
+IMPORTANT: Be specific about which sectors, companies, and indices could be affected. Think through the reasoning chain: Political Event → Economic Impact → Market Impact.
+
+Articles to analyze:
+${batch.map((a, i) => `${startIndex + i}. "${a.title}" - ${a.source}${a.category ? ` [Category: ${a.category}]` : ''}`).join('\n')}
+
+Respond with ONLY valid JSON (no markdown, no code blocks), in this exact format:
 {
   "analyses": [
     {
-      "index": 0,
+      "index": ${startIndex},
       "region": "Americas",
+      "summary": "Brief market impact summary",
+      "overallSentiment": "Bullish",
+      "keyInsight": "Key trading insight or action point",
+      "sectors": [
+        {
+          "sector": "Technology",
+          "impact": "Bearish",
+          "reasoning": "New regulations increase compliance costs for AI companies",
+          "tickers": ["NVDA", "AMD", "GOOGL", "MSFT", "SMH"],
+          "timeframe": "Medium-term",
+          "confidence": "High"
+        },
+        {
+          "sector": "Defense",
+          "impact": "Bullish",
+          "reasoning": "Increased defense spending benefits contractors",
+          "tickers": ["LMT", "RTX", "NOC", "GD", "ITA"],
+          "timeframe": "Long-term",
+          "confidence": "Medium"
+        }
+      ],
       "gold": "Bullish",
       "silver": "Neutral",
       "rareMinerals": "Bearish",
-      "stockMarkets": "Uncertain"
+      "stockMarkets": "Mixed"
     }
   ]
-}`;
+}
 
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: {
-            temperature: 0.3,
-            maxOutputTokens: 8192,
-          },
-        }),
+Sector options: Technology, Financials, Healthcare, Energy, Defense, Industrials, Consumer, Real Estate, Utilities, Materials, Communications, Commodities
+Impact options: Bullish, Bearish, Neutral, Uncertain
+Timeframe options: Short-term (days-weeks), Medium-term (weeks-months), Long-term (months-years)
+Confidence options: High, Medium, Low
+
+Include relevant ETFs alongside individual tickers (e.g., XLF for financials, XLE for energy, QQQ for tech).`;
+
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: {
+              temperature: 0.3,
+              maxOutputTokens: 8192,
+            },
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.text();
+        console.error('Gemini API error:', error);
+        continue; // Skip this batch but continue with others
       }
-    );
 
-    if (!response.ok) {
-      const error = await response.text();
-      console.error('Gemini API error:', error);
-      return NextResponse.json({ error: 'Gemini API error' }, { status: response.status });
-    }
+      const data = await response.json();
+      const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
 
-    const data = await response.json();
-    const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-
-    let analyses: { index: number; region: string; gold: string; silver: string; rareMinerals: string; stockMarkets: string }[] = [];
-
-    try {
-      const jsonMatch = text.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[0]);
-        analyses = parsed.analyses || [];
+      try {
+        const jsonMatch = text.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          const parsed = JSON.parse(jsonMatch[0]);
+          if (parsed.analyses) {
+            allAnalyses.push(...parsed.analyses);
+          }
+        }
+      } catch (parseError) {
+        console.error('Failed to parse Gemini response:', text);
       }
-    } catch {
-      console.error('Failed to parse Gemini response:', text);
+
+      // Small delay between batches to avoid rate limiting
+      if (batchIndex < batches.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, 200));
+      }
     }
 
     const analyzedArticles: AnalyzedArticle[] = articles.map((article, index) => {
-      const analysis = analyses.find(a => a.index === index) || {
-        region: REGIONS[Math.floor(Math.random() * REGIONS.length)],
-        gold: 'Uncertain',
-        silver: 'Uncertain',
-        rareMinerals: 'Uncertain',
-        stockMarkets: 'Uncertain',
-      };
+      const analysis = allAnalyses.find(a => a.index === index);
 
+      if (analysis) {
+        return {
+          ...article,
+          region: analysis.region || 'Americas',
+          analysis: {
+            summary: analysis.summary || '',
+            sectors: analysis.sectors || [],
+            overallSentiment: (analysis.overallSentiment as 'Bullish' | 'Bearish' | 'Mixed' | 'Neutral') || 'Neutral',
+            keyInsight: analysis.keyInsight || '',
+          },
+          implications: {
+            gold: analysis.gold || 'Neutral',
+            silver: analysis.silver || 'Neutral',
+            rareMinerals: analysis.rareMinerals || 'Neutral',
+            stockMarkets: analysis.stockMarkets || 'Neutral',
+          },
+        };
+      }
+
+      // Default analysis for articles that weren't processed
       return {
         ...article,
-        region: analysis.region || 'Americas',
+        region: inferRegion(article.category),
+        analysis: {
+          summary: 'Analysis pending',
+          sectors: [],
+          overallSentiment: 'Neutral' as const,
+          keyInsight: '',
+        },
         implications: {
-          gold: analysis.gold || 'Uncertain',
-          silver: analysis.silver || 'Uncertain',
-          rareMinerals: analysis.rareMinerals || 'Uncertain',
-          stockMarkets: analysis.stockMarkets || 'Uncertain',
+          gold: 'Neutral',
+          silver: 'Neutral',
+          rareMinerals: 'Neutral',
+          stockMarkets: 'Neutral',
         },
       };
     });
@@ -133,4 +230,26 @@ Respond with ONLY valid JSON in this exact format, no markdown:
     console.error('Analysis error:', error);
     return NextResponse.json({ error: 'Failed to analyze articles' }, { status: 500 });
   }
+}
+
+function inferRegion(category?: string): string {
+  if (!category) return 'Americas';
+
+  const regionMap: Record<string, string> = {
+    'US Economy': 'Americas',
+    'US Politics': 'Americas',
+    'Earnings': 'Americas',
+    'Trade Policy': 'Americas',
+    'Defense': 'Americas',
+    'Tech Policy': 'Americas',
+    'EU Economy': 'Europe',
+    'EU Politics': 'Europe',
+    'Financial Regulation': 'Europe',
+    'China': 'Asia',
+    'Middle East': 'Middle East',
+    'Emerging Markets': 'Asia',
+    'Energy': 'Middle East',
+  };
+
+  return regionMap[category] || 'Americas';
 }

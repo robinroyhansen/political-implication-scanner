@@ -1,6 +1,22 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
+
+interface SectorImpact {
+  sector: string;
+  impact: 'Bullish' | 'Bearish' | 'Neutral' | 'Uncertain';
+  reasoning: string;
+  tickers: string[];
+  timeframe: 'Short-term' | 'Medium-term' | 'Long-term';
+  confidence: 'High' | 'Medium' | 'Low';
+}
+
+interface Analysis {
+  summary: string;
+  sectors: SectorImpact[];
+  overallSentiment: 'Bullish' | 'Bearish' | 'Mixed' | 'Neutral';
+  keyInsight: string;
+}
 
 interface Implications {
   gold: string;
@@ -15,6 +31,8 @@ interface AnalyzedArticle {
   url: string;
   publishedAt: string;
   region: string;
+  category?: string;
+  analysis?: Analysis;
   implications: Implications;
 }
 
@@ -46,8 +64,156 @@ const LoadingSpinner = () => (
   </div>
 );
 
-// Impact Badge Component
-const ImpactBadge = ({ impact, asset }: { impact: string; asset: string }) => {
+// Tooltip Component with delay
+const Tooltip = ({ children, content, delay = 300 }: { children: React.ReactNode; content: React.ReactNode; delay?: number }) => {
+  const [isVisible, setIsVisible] = useState(false);
+  const [position, setPosition] = useState({ top: 0, left: 0 });
+  const timeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const triggerRef = useRef<HTMLDivElement>(null);
+
+  const showTooltip = () => {
+    timeoutRef.current = setTimeout(() => {
+      if (triggerRef.current) {
+        const rect = triggerRef.current.getBoundingClientRect();
+        setPosition({
+          top: rect.top - 10,
+          left: rect.left + rect.width / 2,
+        });
+      }
+      setIsVisible(true);
+    }, delay);
+  };
+
+  const hideTooltip = () => {
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+    }
+    setIsVisible(false);
+  };
+
+  return (
+    <div
+      ref={triggerRef}
+      className="relative inline-block"
+      onMouseEnter={showTooltip}
+      onMouseLeave={hideTooltip}
+    >
+      {children}
+      {isVisible && (
+        <div
+          className="fixed z-50 transform -translate-x-1/2 -translate-y-full pointer-events-none animate-fade-in"
+          style={{ top: position.top, left: position.left }}
+        >
+          <div className="bg-slate-900 border border-slate-700 rounded-lg shadow-xl p-4 max-w-sm">
+            {content}
+          </div>
+          <div className="absolute left-1/2 -translate-x-1/2 -bottom-2 w-0 h-0 border-l-8 border-r-8 border-t-8 border-transparent border-t-slate-700"></div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// Sector Impact Tooltip Content
+const SectorTooltipContent = ({ sector }: { sector: SectorImpact }) => {
+  const impactColors = {
+    Bullish: 'text-emerald-400',
+    Bearish: 'text-red-400',
+    Neutral: 'text-slate-400',
+    Uncertain: 'text-amber-400',
+  };
+
+  const confidenceColors = {
+    High: 'bg-emerald-500/20 text-emerald-400',
+    Medium: 'bg-amber-500/20 text-amber-400',
+    Low: 'bg-slate-500/20 text-slate-400',
+  };
+
+  const timeframeIcons = {
+    'Short-term': '⚡',
+    'Medium-term': '📅',
+    'Long-term': '🎯',
+  };
+
+  return (
+    <div className="space-y-3 min-w-[280px]">
+      <div className="flex items-center justify-between">
+        <span className="font-semibold text-slate-100">{sector.sector}</span>
+        <span className={`font-bold ${impactColors[sector.impact]}`}>
+          {sector.impact === 'Bullish' ? '↑' : sector.impact === 'Bearish' ? '↓' : '→'} {sector.impact}
+        </span>
+      </div>
+
+      <p className="text-sm text-slate-300 leading-relaxed">{sector.reasoning}</p>
+
+      {sector.tickers && sector.tickers.length > 0 && (
+        <div>
+          <div className="text-xs text-slate-500 uppercase tracking-wider mb-1">Affected Tickers</div>
+          <div className="flex flex-wrap gap-1">
+            {sector.tickers.map((ticker) => (
+              <span
+                key={ticker}
+                className="px-2 py-0.5 bg-slate-800 text-slate-300 text-xs font-mono rounded"
+              >
+                {ticker}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="flex items-center justify-between text-xs pt-2 border-t border-slate-700">
+        <span className="text-slate-400">
+          {timeframeIcons[sector.timeframe]} {sector.timeframe}
+        </span>
+        <span className={`px-2 py-0.5 rounded ${confidenceColors[sector.confidence]}`}>
+          {sector.confidence} Confidence
+        </span>
+      </div>
+    </div>
+  );
+};
+
+// Impact Badge Component with Tooltip
+const ImpactBadge = ({ sector }: { sector: SectorImpact }) => {
+  const getImpactStyle = () => {
+    switch (sector.impact) {
+      case 'Bullish':
+        return 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/30';
+      case 'Bearish':
+        return 'bg-red-500/20 text-red-400 border-red-500/30 hover:bg-red-500/30';
+      case 'Neutral':
+        return 'bg-slate-500/20 text-slate-400 border-slate-500/30 hover:bg-slate-500/30';
+      default:
+        return 'bg-amber-500/20 text-amber-400 border-amber-500/30 hover:bg-amber-500/30';
+    }
+  };
+
+  const getImpactIcon = () => {
+    switch (sector.impact) {
+      case 'Bullish':
+        return '↑';
+      case 'Bearish':
+        return '↓';
+      case 'Neutral':
+        return '→';
+      default:
+        return '?';
+    }
+  };
+
+  return (
+    <Tooltip content={<SectorTooltipContent sector={sector} />}>
+      <span className={`inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded border cursor-help transition-colors ${getImpactStyle()}`}>
+        <span>{getImpactIcon()}</span>
+        <span>{sector.sector}</span>
+      </span>
+    </Tooltip>
+  );
+};
+
+// Legacy Impact Badge (for commodities)
+const LegacyImpactBadge = ({ impact, asset }: { impact: string; asset: string }) => {
   const getImpactStyle = () => {
     switch (impact) {
       case 'Bullish':
@@ -96,50 +262,86 @@ const NewsCard = ({ article, index }: { article: AnalyzedArticle; index: number 
     return 'Just now';
   };
 
-  const getOverallSentiment = () => {
-    const impacts = Object.values(article.implications);
-    const bullish = impacts.filter(i => i === 'Bullish').length;
-    const bearish = impacts.filter(i => i === 'Bearish').length;
-
-    if (bullish > bearish) return { label: 'Positive Outlook', color: 'text-emerald-400', icon: '●' };
-    if (bearish > bullish) return { label: 'Negative Outlook', color: 'text-red-400', icon: '●' };
-    return { label: 'Mixed Signals', color: 'text-amber-400', icon: '●' };
+  const getSentimentStyle = () => {
+    const sentiment = article.analysis?.overallSentiment;
+    switch (sentiment) {
+      case 'Bullish':
+        return { label: 'Bullish', color: 'text-emerald-400', icon: '●' };
+      case 'Bearish':
+        return { label: 'Bearish', color: 'text-red-400', icon: '●' };
+      case 'Mixed':
+        return { label: 'Mixed', color: 'text-amber-400', icon: '●' };
+      default:
+        return { label: 'Neutral', color: 'text-slate-400', icon: '●' };
+    }
   };
 
-  const sentiment = getOverallSentiment();
+  const sentiment = getSentimentStyle();
+  const hasSectors = article.analysis?.sectors && article.analysis.sectors.length > 0;
 
   return (
     <article
-      className="group bg-slate-800/50 border border-slate-700/50 rounded-lg p-5 hover:bg-slate-800/80 hover:border-slate-600/50 transition-all duration-300 animate-fade-in"
-      style={{ animationDelay: `${index * 50}ms` }}
+      className="group bg-slate-800/50 border border-slate-700/50 rounded-lg p-5 hover:bg-slate-800/80 hover:border-slate-600/50 transition-all duration-300 animate-fade-in flex flex-col"
+      style={{ animationDelay: `${index * 30}ms` }}
     >
-      <div className="flex items-start justify-between gap-4 mb-3">
-        <div className="flex-1">
-          <div className="flex items-center gap-2 text-xs text-slate-400 mb-2">
-            <span className="font-medium text-amber-500">{article.source}</span>
-            <span>•</span>
-            <span>{timeAgo(article.publishedAt)}</span>
-            <span>•</span>
-            <span className={sentiment.color}>
-              {sentiment.icon} {sentiment.label}
-            </span>
-          </div>
-          <a
-            href={article.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="block font-serif text-lg font-semibold text-slate-100 group-hover:text-amber-400 transition-colors line-clamp-2"
-          >
-            {article.title}
-          </a>
+      <div className="flex-1">
+        <div className="flex items-center gap-2 text-xs text-slate-400 mb-2 flex-wrap">
+          <span className="font-medium text-amber-500">{article.source}</span>
+          <span>•</span>
+          <span>{timeAgo(article.publishedAt)}</span>
+          <span>•</span>
+          <span className={sentiment.color}>
+            {sentiment.icon} {sentiment.label}
+          </span>
+          {article.category && (
+            <>
+              <span>•</span>
+              <span className="text-slate-500">{article.category}</span>
+            </>
+          )}
         </div>
+        <a
+          href={article.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="block font-serif text-lg font-semibold text-slate-100 group-hover:text-amber-400 transition-colors line-clamp-2 mb-2"
+        >
+          {article.title}
+        </a>
+
+        {/* Analysis Summary */}
+        {article.analysis?.summary && (
+          <p className="text-sm text-slate-400 mb-3 line-clamp-2">{article.analysis.summary}</p>
+        )}
+
+        {/* Key Insight */}
+        {article.analysis?.keyInsight && (
+          <div className="text-xs bg-amber-500/10 border border-amber-500/20 rounded px-2 py-1 text-amber-300 mb-3">
+            💡 {article.analysis.keyInsight}
+          </div>
+        )}
       </div>
 
-      <div className="flex flex-wrap gap-2 mt-4">
-        <ImpactBadge impact={article.implications.gold} asset="Gold" />
-        <ImpactBadge impact={article.implications.silver} asset="Silver" />
-        <ImpactBadge impact={article.implications.rareMinerals} asset="Minerals" />
-        <ImpactBadge impact={article.implications.stockMarkets} asset="Stocks" />
+      {/* Sector Impact Badges with Tooltips */}
+      <div className="mt-auto pt-3 border-t border-slate-700/50">
+        {hasSectors ? (
+          <div className="flex flex-wrap gap-2">
+            {article.analysis!.sectors.slice(0, 4).map((sector, idx) => (
+              <ImpactBadge key={`${sector.sector}-${idx}`} sector={sector} />
+            ))}
+            {article.analysis!.sectors.length > 4 && (
+              <span className="text-xs text-slate-500 self-center">
+                +{article.analysis!.sectors.length - 4} more
+              </span>
+            )}
+          </div>
+        ) : (
+          <div className="flex flex-wrap gap-2">
+            <LegacyImpactBadge impact={article.implications.gold} asset="Gold" />
+            <LegacyImpactBadge impact={article.implications.silver} asset="Silver" />
+            <LegacyImpactBadge impact={article.implications.stockMarkets} asset="Stocks" />
+          </div>
+        )}
       </div>
     </article>
   );
@@ -165,10 +367,11 @@ const SkeletonCard = () => (
     </div>
     <div className="h-5 w-full bg-slate-700 rounded mb-2 shimmer"></div>
     <div className="h-5 w-3/4 bg-slate-700 rounded mb-4 shimmer"></div>
-    <div className="flex gap-2">
-      <div className="h-6 w-16 bg-slate-700 rounded shimmer"></div>
-      <div className="h-6 w-16 bg-slate-700 rounded shimmer"></div>
-      <div className="h-6 w-16 bg-slate-700 rounded shimmer"></div>
+    <div className="h-4 w-full bg-slate-700/50 rounded mb-4 shimmer"></div>
+    <div className="flex gap-2 pt-3 border-t border-slate-700/50">
+      <div className="h-6 w-20 bg-slate-700 rounded shimmer"></div>
+      <div className="h-6 w-20 bg-slate-700 rounded shimmer"></div>
+      <div className="h-6 w-20 bg-slate-700 rounded shimmer"></div>
     </div>
   </div>
 );
@@ -182,6 +385,7 @@ export default function Home() {
   const [activeRegion, setActiveRegion] = useState<Region>('All');
   const [impactFilter, setImpactFilter] = useState<ImpactFilter>('All');
   const [darkMode, setDarkMode] = useState(true);
+  const [progress, setProgress] = useState<string>('');
 
   useEffect(() => {
     if (darkMode) {
@@ -194,11 +398,14 @@ export default function Home() {
   const scanNews = async () => {
     setLoading(true);
     setError(null);
+    setProgress('Fetching global news feeds...');
 
     try {
       const newsRes = await fetch('/api/news');
       if (!newsRes.ok) throw new Error('Failed to fetch news');
       const { articles } = await newsRes.json();
+
+      setProgress(`Analyzing ${articles.length} articles with AI...`);
 
       const analyzeRes = await fetch('/api/analyze', {
         method: 'POST',
@@ -211,8 +418,10 @@ export default function Home() {
       setData(result.grouped);
       setTotal(result.total);
       setLastScan(new Date());
+      setProgress('');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
+      setProgress('');
     } finally {
       setLoading(false);
     }
@@ -230,9 +439,16 @@ export default function Home() {
     }
 
     if (impactFilter !== 'All') {
-      articles = articles.filter(article =>
-        Object.values(article.implications).some(impact => impact === impactFilter)
-      );
+      articles = articles.filter(article => {
+        // Check sector impacts
+        if (article.analysis?.sectors) {
+          if (article.analysis.sectors.some(s => s.impact === impactFilter)) {
+            return true;
+          }
+        }
+        // Fallback to legacy implications
+        return Object.values(article.implications).some(impact => impact === impactFilter);
+      });
     }
 
     return articles;
@@ -308,14 +524,14 @@ export default function Home() {
                 {loading ? (
                   <>
                     <LoadingSpinner />
-                    <span>Analyzing Global News...</span>
+                    <span className="max-w-[200px] truncate">{progress || 'Processing...'}</span>
                   </>
                 ) : (
                   <>
                     <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
                     </svg>
-                    <span>Scan Global News</span>
+                    <span>Scan 150 Articles</span>
                   </>
                 )}
               </span>
@@ -364,10 +580,10 @@ export default function Home() {
           <div className="space-y-4">
             <div className="flex items-center gap-3 mb-6">
               <LoadingSpinner />
-              <span className="text-slate-400">Fetching and analyzing global news...</span>
+              <span className="text-slate-400">{progress || 'Processing...'}</span>
             </div>
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-              {[...Array(6)].map((_, i) => (
+              {[...Array(9)].map((_, i) => (
                 <SkeletonCard key={i} />
               ))}
             </div>
@@ -415,6 +631,14 @@ export default function Home() {
               </div>
             </div>
 
+            {/* Hover hint */}
+            <div className="text-xs text-slate-500 flex items-center gap-2">
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <span>Hover over sector badges for detailed analysis, affected tickers, and confidence levels</span>
+            </div>
+
             {/* Articles Grid */}
             {filteredArticles.length > 0 ? (
               <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
@@ -450,10 +674,10 @@ export default function Home() {
               Ready to Analyze Global Markets
             </h2>
             <p className="text-slate-500 max-w-md mx-auto mb-8">
-              Click &quot;Scan Global News&quot; to fetch the latest political news and analyze their
-              potential impact on commodities and stock markets.
+              Scan 150+ articles from US/EU financial news and global political sources.
+              Get AI-powered sector analysis with specific ticker recommendations.
             </p>
-            <div className="flex flex-wrap justify-center gap-4 text-sm text-slate-500">
+            <div className="flex flex-wrap justify-center gap-4 text-sm text-slate-500 mb-8">
               <div className="flex items-center gap-2">
                 <span className="w-2 h-2 bg-emerald-500 rounded-full"></span>
                 <span>Bullish Signals</span>
@@ -469,6 +693,24 @@ export default function Home() {
               <div className="flex items-center gap-2">
                 <span className="w-2 h-2 bg-slate-500 rounded-full"></span>
                 <span>Neutral</span>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 max-w-2xl mx-auto text-xs text-slate-400">
+              <div className="bg-slate-800/30 rounded-lg p-3 border border-slate-700/30">
+                <div className="text-amber-500 font-semibold mb-1">70%</div>
+                <div>US/EU Financial</div>
+              </div>
+              <div className="bg-slate-800/30 rounded-lg p-3 border border-slate-700/30">
+                <div className="text-amber-500 font-semibold mb-1">30%</div>
+                <div>Global Political</div>
+              </div>
+              <div className="bg-slate-800/30 rounded-lg p-3 border border-slate-700/30">
+                <div className="text-amber-500 font-semibold mb-1">12+</div>
+                <div>Sectors Tracked</div>
+              </div>
+              <div className="bg-slate-800/30 rounded-lg p-3 border border-slate-700/30">
+                <div className="text-amber-500 font-semibold mb-1">AI</div>
+                <div>Ticker Analysis</div>
               </div>
             </div>
           </div>
@@ -488,7 +730,7 @@ export default function Home() {
               <span>•</span>
               <span>Data from NewsAPI</span>
               <span>•</span>
-              <span>Analysis by Gemini</span>
+              <span>Analysis by Gemini 2.0</span>
             </div>
           </div>
         </div>
