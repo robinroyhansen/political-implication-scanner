@@ -1,5 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+export async function GET() {
+  return NextResponse.json(
+    { error: 'Method not allowed. Use POST with articles array.' },
+    { status: 405 }
+  );
+}
+
 interface Article {
   title: string;
   source: string;
