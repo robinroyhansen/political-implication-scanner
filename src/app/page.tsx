@@ -1,8 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer } from 'recharts';
-import { saveScan, getRecentScans, saveWatchlist, getWatchlist, ScanRecord } from '@/lib/supabase';
+import { saveScan, saveWatchlist, getWatchlist } from '@/lib/supabase';
 
 // Types
 interface SectorImpact {
@@ -283,48 +282,210 @@ const Watchlist = ({ watchlist, onRemove, onAdd }: { watchlist: string[]; onRemo
   </div>
 );
 
-// Sentiment Chart Component
-const SentimentChart = ({ data }: { data: ScanRecord[] }) => {
-  if (!data || data.length < 2) {
+// Sector data type
+interface SectorData {
+  name: string;
+  bullish: number;
+  neutral: number;
+  bearish: number;
+  total: number;
+  netScore: number;
+}
+
+// Tracked sectors with display names
+const TRACKED_SECTORS: Record<string, string> = {
+  'Technology': 'Technology',
+  'Financials': 'Finance/Banking',
+  'Energy': 'Energy/Oil & Gas',
+  'Healthcare': 'Healthcare/Pharma',
+  'Defense': 'Defense/Aerospace',
+  'Commodities': 'Commodities',
+  'Real Estate': 'Real Estate',
+  'Consumer': 'Consumer/Retail',
+  'Industrials': 'Industrials',
+  'Materials': 'Materials',
+  'Communications': 'Communications',
+  'Utilities': 'Utilities',
+};
+
+// Sector Heatmap Component
+const SectorHeatmap = ({
+  articles,
+  selectedSector,
+  onSectorClick,
+}: {
+  articles: AnalyzedArticle[];
+  selectedSector: string | null;
+  onSectorClick: (sector: string | null) => void;
+}) => {
+  const [showAll, setShowAll] = useState(false);
+
+  // Aggregate sector data from articles
+  const sectorData: SectorData[] = Object.entries(TRACKED_SECTORS).map(([key, displayName]) => {
+    let bullish = 0, neutral = 0, bearish = 0;
+
+    articles.forEach(article => {
+      article.analysis?.sectors?.forEach(sector => {
+        // Match sector name (flexible matching)
+        const sectorName = sector.sector.toLowerCase();
+        const keyLower = key.toLowerCase();
+        if (sectorName.includes(keyLower) || keyLower.includes(sectorName)) {
+          if (sector.impact === 'Bullish') bullish++;
+          else if (sector.impact === 'Bearish') bearish++;
+          else neutral++;
+        }
+      });
+    });
+
+    const total = bullish + neutral + bearish;
+    const netScore = bullish - bearish;
+
+    return { name: displayName, bullish, neutral, bearish, total, netScore };
+  })
+    .filter(s => s.total > 0) // Only show sectors with data
+    .sort((a, b) => b.total - a.total); // Sort by most impacted
+
+  const displayedSectors = showAll ? sectorData : sectorData.slice(0, 6);
+  const hasMore = sectorData.length > 6;
+
+  if (sectorData.length === 0) {
     return (
       <div className="bg-slate-800/30 border border-slate-700/30 rounded-lg p-6 text-center text-slate-500">
-        <p>Need at least 2 scans to show trend chart</p>
+        <svg className="w-12 h-12 mx-auto mb-3 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+        </svg>
+        <p>Run a scan to see sector impact</p>
       </div>
     );
   }
 
-  const chartData = [...data].reverse().map(scan => ({
-    time: new Date(scan.created_at!).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-    date: new Date(scan.created_at!).toLocaleDateString(),
-    overall: scan.sentiment_score,
-    americas: scan.americas_sentiment,
-    europe: scan.europe_sentiment,
-    asia: scan.asia_sentiment,
-    articles: scan.total_articles,
-  }));
+  const maxTotal = Math.max(...sectorData.map(s => s.total));
 
   return (
     <div className="bg-slate-800/30 border border-slate-700/30 rounded-lg p-4">
-      <h3 className="text-lg font-semibold text-slate-200 mb-4">Sentiment Trend</h3>
-      <div className="h-64 w-full overflow-x-auto">
-        <ResponsiveContainer width="100%" height="100%" minWidth={400}>
-          <LineChart data={chartData} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-            <XAxis dataKey="time" stroke="#64748b" fontSize={12} />
-            <YAxis stroke="#64748b" fontSize={12} domain={[-100, 100]} />
-            <RechartsTooltip
-              contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #334155', borderRadius: '8px' }}
-              labelStyle={{ color: '#f1f5f9' }}
-              formatter={(value, name) => [`${value ?? 0}`, String(name).charAt(0).toUpperCase() + String(name).slice(1)]}
-              labelFormatter={(label, payload) => payload?.[0]?.payload?.date ? `${payload[0].payload.date} ${label}` : label}
-            />
-            <Legend />
-            <Line type="monotone" dataKey="overall" name="Overall" stroke="#f59e0b" strokeWidth={2} dot={{ fill: '#f59e0b' }} />
-            <Line type="monotone" dataKey="americas" name="Americas" stroke="#3b82f6" strokeWidth={1.5} dot={false} />
-            <Line type="monotone" dataKey="europe" name="Europe" stroke="#8b5cf6" strokeWidth={1.5} dot={false} />
-            <Line type="monotone" dataKey="asia" name="Asia" stroke="#10b981" strokeWidth={1.5} dot={false} />
-          </LineChart>
-        </ResponsiveContainer>
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <h3 className="text-lg font-semibold text-slate-200">Sector Impact Heatmap</h3>
+          <p className="text-xs text-slate-500">Click a sector to filter news</p>
+        </div>
+        {selectedSector && (
+          <button
+            onClick={() => onSectorClick(null)}
+            className="text-xs px-2 py-1 bg-amber-500/20 text-amber-400 rounded hover:bg-amber-500/30 transition-colors"
+          >
+            Clear filter
+          </button>
+        )}
+      </div>
+
+      <div className="space-y-2 overflow-x-auto">
+        {/* Header */}
+        <div className="grid grid-cols-[1fr,auto] gap-2 text-xs text-slate-500 uppercase tracking-wider pb-2 border-b border-slate-700/50 min-w-[300px]">
+          <span>Sector</span>
+          <span className="text-right w-16">Net</span>
+        </div>
+
+        {/* Rows */}
+        {displayedSectors.map((sector) => {
+          const isSelected = selectedSector === sector.name;
+          const barWidth = (sector.total / maxTotal) * 100;
+          const bullishWidth = sector.total > 0 ? (sector.bullish / sector.total) * 100 : 0;
+          const neutralWidth = sector.total > 0 ? (sector.neutral / sector.total) * 100 : 0;
+          const bearishWidth = sector.total > 0 ? (sector.bearish / sector.total) * 100 : 0;
+
+          return (
+            <div
+              key={sector.name}
+              onClick={() => onSectorClick(isSelected ? null : sector.name)}
+              className={`group grid grid-cols-[1fr,auto] gap-2 items-center p-2 rounded-lg cursor-pointer transition-all min-w-[300px] ${
+                isSelected
+                  ? 'bg-amber-500/20 ring-1 ring-amber-500/50'
+                  : 'hover:bg-slate-700/30'
+              } ${
+                sector.netScore > 0 ? 'hover:bg-emerald-500/10' : sector.netScore < 0 ? 'hover:bg-red-500/10' : ''
+              }`}
+              title={`${sector.name}: ${sector.bullish} bullish, ${sector.neutral} neutral, ${sector.bearish} bearish`}
+            >
+              {/* Sector name and bar */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <span className={`text-sm font-medium ${isSelected ? 'text-amber-400' : 'text-slate-200'}`}>
+                    {sector.name}
+                  </span>
+                  <span className="text-xs text-slate-500 ml-2">{sector.total} articles</span>
+                </div>
+
+                {/* Stacked bar */}
+                <div className="h-3 bg-slate-700/50 rounded-full overflow-hidden" style={{ width: `${Math.max(barWidth, 30)}%` }}>
+                  <div className="h-full flex">
+                    {bullishWidth > 0 && (
+                      <div
+                        className="h-full bg-gradient-to-r from-emerald-500 to-emerald-400 transition-all"
+                        style={{ width: `${bullishWidth}%` }}
+                      />
+                    )}
+                    {neutralWidth > 0 && (
+                      <div
+                        className="h-full bg-slate-500 transition-all"
+                        style={{ width: `${neutralWidth}%` }}
+                      />
+                    )}
+                    {bearishWidth > 0 && (
+                      <div
+                        className="h-full bg-gradient-to-r from-red-400 to-red-500 transition-all"
+                        style={{ width: `${bearishWidth}%` }}
+                      />
+                    )}
+                  </div>
+                </div>
+
+                {/* Legend on hover */}
+                <div className="flex gap-3 text-xs opacity-0 group-hover:opacity-100 transition-opacity">
+                  <span className="text-emerald-400">↑{sector.bullish}</span>
+                  <span className="text-slate-400">→{sector.neutral}</span>
+                  <span className="text-red-400">↓{sector.bearish}</span>
+                </div>
+              </div>
+
+              {/* Net score */}
+              <div className={`w-16 text-right font-mono font-bold text-lg ${
+                sector.netScore > 0
+                  ? 'text-emerald-400'
+                  : sector.netScore < 0
+                  ? 'text-red-400'
+                  : 'text-slate-400'
+              }`}>
+                {sector.netScore > 0 ? '+' : ''}{sector.netScore}
+              </div>
+            </div>
+          );
+        })}
+
+        {/* Show more/less */}
+        {hasMore && (
+          <button
+            onClick={() => setShowAll(!showAll)}
+            className="w-full py-2 text-sm text-slate-400 hover:text-slate-200 transition-colors"
+          >
+            {showAll ? '← Show less' : `Show all ${sectorData.length} sectors →`}
+          </button>
+        )}
+      </div>
+
+      {/* Legend */}
+      <div className="flex items-center justify-center gap-4 mt-4 pt-3 border-t border-slate-700/50 text-xs text-slate-500">
+        <span className="flex items-center gap-1">
+          <span className="w-3 h-3 rounded bg-gradient-to-r from-emerald-500 to-emerald-400"></span>
+          Bullish
+        </span>
+        <span className="flex items-center gap-1">
+          <span className="w-3 h-3 rounded bg-slate-500"></span>
+          Neutral
+        </span>
+        <span className="flex items-center gap-1">
+          <span className="w-3 h-3 rounded bg-gradient-to-r from-red-400 to-red-500"></span>
+          Bearish
+        </span>
       </div>
     </div>
   );
@@ -643,7 +804,7 @@ export default function Home() {
   const [impactFilter, setImpactFilter] = useState<ImpactFilter>('All');
   const [watchlistOnly, setWatchlistOnly] = useState(false);
   const [watchlist, setWatchlist] = useState<string[]>([]);
-  const [scanHistory, setScanHistory] = useState<ScanRecord[]>([]);
+  const [sectorFilter, setSectorFilter] = useState<string | null>(null);
   const [summary, setSummary] = useState('');
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [progress, setProgress] = useState('');
@@ -652,7 +813,7 @@ export default function Home() {
   const [allExpanded, setAllExpanded] = useState(false);
   const eventSourceRef = useRef<EventSource | null>(null);
 
-  // Load watchlist and scan history on mount
+  // Load watchlist on mount
   useEffect(() => {
     const loadData = async () => {
       // Load from localStorage first
@@ -666,9 +827,6 @@ export default function Home() {
         setWatchlist(supabaseWatchlist);
         localStorage.setItem('watchlist', JSON.stringify(supabaseWatchlist));
       }
-      // Load scan history
-      const history = await getRecentScans(20);
-      setScanHistory(history);
     };
     loadData();
   }, []);
@@ -808,24 +966,19 @@ export default function Home() {
       setAllArticles(finalArticles);
       setTotal(data.total);
 
-      // Calculate sentiments
+      // Calculate sentiments and save to Supabase
       const overallSentiment = calculateSentiment(finalArticles);
       const americasSentiment = calculateSentiment(finalArticles.filter(a => a.region === 'Americas'));
       const europeSentiment = calculateSentiment(finalArticles.filter(a => a.region === 'Europe'));
       const asiaSentiment = calculateSentiment(finalArticles.filter(a => ['Asia', 'Middle East', 'Africa'].includes(a.region)));
 
-      // Save scan to Supabase
-      const savedScan = await saveScan({
+      await saveScan({
         total_articles: data.total,
         sentiment_score: overallSentiment,
         americas_sentiment: americasSentiment,
         europe_sentiment: europeSentiment,
         asia_sentiment: asiaSentiment,
       });
-
-      if (savedScan) {
-        setScanHistory(prev => [savedScan, ...prev].slice(0, 20));
-      }
 
       // Generate summary
       await generateSummary(finalArticles);
@@ -868,6 +1021,22 @@ export default function Home() {
 
     if (watchlistOnly && watchlist.length > 0) {
       articles = articles.filter(a => articleMentionsTicker(a, watchlist));
+    }
+
+    // Sector filter from heatmap
+    if (sectorFilter) {
+      articles = articles.filter(a =>
+        a.analysis?.sectors?.some(s => {
+          const sectorName = s.sector.toLowerCase();
+          const filterLower = sectorFilter.toLowerCase();
+          // Match display name or key
+          return sectorName.includes(filterLower) ||
+            filterLower.includes(sectorName) ||
+            Object.entries(TRACKED_SECTORS).some(([key, display]) =>
+              display === sectorFilter && sectorName.includes(key.toLowerCase())
+            );
+        })
+      );
     }
 
     return articles;
@@ -957,10 +1126,14 @@ export default function Home() {
       )}
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
-        {/* Watchlist and Chart Row */}
+        {/* Watchlist and Sector Heatmap Row */}
         <div className="grid gap-6 lg:grid-cols-2">
           <Watchlist watchlist={watchlist} onAdd={addToWatchlist} onRemove={removeFromWatchlist} />
-          <SentimentChart data={scanHistory} />
+          <SectorHeatmap
+            articles={allArticles}
+            selectedSector={sectorFilter}
+            onSectorClick={setSectorFilter}
+          />
         </div>
 
         {/* Summary Report */}
@@ -1023,6 +1196,16 @@ export default function Home() {
                 ))}
               </div>
               <div className="flex items-center gap-3 flex-wrap">
+                {/* Sector filter badge */}
+                {sectorFilter && (
+                  <span className="flex items-center gap-2 px-3 py-1.5 bg-amber-500/20 text-amber-400 rounded-lg text-sm border border-amber-500/30">
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                    </svg>
+                    {sectorFilter}
+                    <button onClick={() => setSectorFilter(null)} className="hover:text-amber-200">×</button>
+                  </span>
+                )}
                 {/* Expand/Collapse All */}
                 <button
                   onClick={() => {
@@ -1084,7 +1267,7 @@ export default function Home() {
             ) : (
               <div className="text-center py-12 text-slate-500">
                 <p>No articles match your filters</p>
-                <button onClick={() => { setActiveRegion('All'); setImpactFilter('All'); setWatchlistOnly(false); }} className="mt-2 text-amber-500 hover:text-amber-400">Clear filters</button>
+                <button onClick={() => { setActiveRegion('All'); setImpactFilter('All'); setWatchlistOnly(false); setSectorFilter(null); }} className="mt-2 text-amber-500 hover:text-amber-400">Clear filters</button>
               </div>
             )}
           </>
