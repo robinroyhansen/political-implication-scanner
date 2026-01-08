@@ -577,7 +577,12 @@ const NewsCard = ({ article, index, isWatchlisted, isExpanded, onToggleExpand }:
     Neutral: { label: 'Neutral', color: 'text-slate-400' },
   }[sentiment || 'Neutral'] || { label: 'Neutral', color: 'text-slate-400' };
 
-  const hasMoreContent = (article.analysis?.summary && article.analysis.summary.length > 120) ||
+  // Check if analysis is limited/unavailable
+  const isLimitedAnalysis = article.analysis?.summary?.includes('unavailable') ||
+    article.analysis?.summary?.includes('incomplete') ||
+    article.analysis?.sectors?.some(s => s.confidence === 'Low' && s.reasoning?.includes('unavailable'));
+
+  const hasMoreContent = (article.analysis?.summary && article.analysis.summary.length > 120 && !isLimitedAnalysis) ||
     (article.analysis?.sectors && article.analysis.sectors.length > 2) ||
     article.analysis?.keyInsight;
 
@@ -608,7 +613,16 @@ const NewsCard = ({ article, index, isWatchlisted, isExpanded, onToggleExpand }:
             <span>•</span>
             <span>{timeAgo(article.publishedAt)}</span>
             <span>•</span>
-            <span className={sentimentStyle.color}>● {sentimentStyle.label}</span>
+            {isLimitedAnalysis ? (
+              <span className="text-orange-400 flex items-center gap-1" title="Limited analysis - AI was unavailable">
+                <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                </svg>
+                Limited
+              </span>
+            ) : (
+              <span className={sentimentStyle.color}>● {sentimentStyle.label}</span>
+            )}
           </div>
           {hasMoreContent && (
             <svg
@@ -958,19 +972,52 @@ export default function Home() {
 
       setLoading(false);
       setLastScan(new Date());
-      setPendingArticles([]); // Clear pending, all done
       setProgress('Generating briefing...');
 
       // Final articles from map
       const finalArticles = Array.from(analyzedArticlesMap.values());
-      setAllArticles(finalArticles);
+
+      // Check for any articles that weren't analyzed (shouldn't happen with new backend, but safety check)
+      const failedCount = finalArticles.filter(a =>
+        a.analysis?.summary === 'Analysis pending' ||
+        !a.analysis?.summary
+      ).length;
+
+      if (failedCount > 0) {
+        console.warn(`${failedCount} articles had incomplete analysis`);
+      }
+
+      // Mark all articles as not pending and ensure they have analysis
+      const processedArticles = finalArticles.map(a => ({
+        ...a,
+        pending: false,
+        analysis: a.analysis?.summary ? a.analysis : {
+          summary: 'Analysis unavailable',
+          sectors: [],
+          overallSentiment: 'Neutral' as const,
+          keyInsight: '',
+        }
+      }));
+
+      setAllArticles(processedArticles);
+      setPendingArticles([]); // Clear pending, all done
       setTotal(data.total);
 
+      // Update grouped data with processed articles
+      const grouped: GroupedArticles = {
+        Americas: processedArticles.filter(a => a.region === 'Americas'),
+        Europe: processedArticles.filter(a => a.region === 'Europe'),
+        Asia: processedArticles.filter(a => a.region === 'Asia'),
+        'Middle East': processedArticles.filter(a => a.region === 'Middle East'),
+        Africa: processedArticles.filter(a => a.region === 'Africa'),
+      };
+      setData(grouped);
+
       // Calculate sentiments and save to Supabase
-      const overallSentiment = calculateSentiment(finalArticles);
-      const americasSentiment = calculateSentiment(finalArticles.filter(a => a.region === 'Americas'));
-      const europeSentiment = calculateSentiment(finalArticles.filter(a => a.region === 'Europe'));
-      const asiaSentiment = calculateSentiment(finalArticles.filter(a => ['Asia', 'Middle East', 'Africa'].includes(a.region)));
+      const overallSentiment = calculateSentiment(processedArticles);
+      const americasSentiment = calculateSentiment(processedArticles.filter(a => a.region === 'Americas'));
+      const europeSentiment = calculateSentiment(processedArticles.filter(a => a.region === 'Europe'));
+      const asiaSentiment = calculateSentiment(processedArticles.filter(a => ['Asia', 'Middle East', 'Africa'].includes(a.region)));
 
       await saveScan({
         total_articles: data.total,
@@ -981,7 +1028,7 @@ export default function Home() {
       });
 
       // Generate summary
-      await generateSummary(finalArticles);
+      await generateSummary(processedArticles);
       setProgress('');
     });
 

@@ -129,38 +129,53 @@ export async function GET(request: NextRequest) {
 
         const batchSize = 5; // Small batches for faster streaming
         let analyzedCount = 0;
+        let failedCount = 0;
 
         for (let i = 0; i < sortedArticles.length; i += batchSize) {
           const batch = sortedArticles.slice(i, i + batchSize);
-          const batchIndices = batch.map((_, idx) => i + idx);
 
-          try {
-            const analyzedBatch = await analyzeBatch(batch, batchIndices, geminiApiKey);
+          let analyzedBatch: AnalyzedArticle[] = [];
+          let retryCount = 0;
+          const maxRetries = 2;
 
-            // Send each analyzed article
-            for (const article of analyzedBatch) {
-              analyzedCount++;
-              send('analyzed', {
-                article,
-                progress: { current: analyzedCount, total: sortedArticles.length }
-              });
-            }
-          } catch (err) {
-            console.error('Batch analysis error:', err);
-            // Send articles with default analysis on error
-            for (const article of batch) {
-              analyzedCount++;
-              send('analyzed', {
-                article: createDefaultAnalysis(article),
-                progress: { current: analyzedCount, total: sortedArticles.length }
-              });
+          // Try to analyze with retry
+          while (retryCount < maxRetries) {
+            try {
+              analyzedBatch = await analyzeBatch(batch, geminiApiKey);
+              break; // Success, exit retry loop
+            } catch (err) {
+              retryCount++;
+              console.error(`Batch analysis error (attempt ${retryCount}):`, err);
+              if (retryCount < maxRetries) {
+                await new Promise(resolve => setTimeout(resolve, 500)); // Wait before retry
+              }
             }
           }
 
-          // Small delay between batches
+          // If all retries failed, create fallback analysis
+          if (analyzedBatch.length === 0) {
+            analyzedBatch = batch.map(article => createFallbackAnalysis(article, 'AI analysis unavailable'));
+            failedCount += batch.length;
+          }
+
+          // Send each analyzed article
+          for (const article of analyzedBatch) {
+            analyzedCount++;
+            send('analyzed', {
+              article,
+              progress: { current: analyzedCount, total: sortedArticles.length }
+            });
+          }
+
+          // Small delay between batches to avoid rate limiting
           if (i + batchSize < sortedArticles.length) {
-            await new Promise(resolve => setTimeout(resolve, 100));
+            await new Promise(resolve => setTimeout(resolve, 150));
           }
+        }
+
+        // Log failures
+        if (failedCount > 0) {
+          console.warn(`${failedCount} articles could not be analyzed`);
         }
 
         // Phase 3: Complete
@@ -188,19 +203,20 @@ export async function GET(request: NextRequest) {
 
 async function analyzeBatch(
   articles: Article[],
-  indices: number[],
   apiKey: string
 ): Promise<AnalyzedArticle[]> {
-  const prompt = `You are a senior financial analyst. Analyze these news headlines for market impact.
+  const prompt = `You are a senior financial analyst. Analyze these ${articles.length} news headlines for market impact.
 
 Articles:
-${articles.map((a, i) => `${indices[i]}. "${a.title}" - ${a.source} [${a.category}]`).join('\n')}
+${articles.map((a, i) => `${i + 1}. "${a.title}" - ${a.source} [${a.category}]`).join('\n')}
 
-Respond with ONLY valid JSON:
+IMPORTANT: You MUST provide analysis for ALL ${articles.length} articles. Return exactly ${articles.length} analyses in the same order.
+
+Respond with ONLY valid JSON (no markdown):
 {
   "analyses": [
     {
-      "index": ${indices[0]},
+      "articleNum": 1,
       "region": "Americas|Europe|Asia|Middle East|Africa",
       "summary": "Brief market impact (1 sentence)",
       "overallSentiment": "Bullish|Bearish|Mixed|Neutral",
@@ -236,6 +252,8 @@ Respond with ONLY valid JSON:
   );
 
   if (!response.ok) {
+    const errorText = await response.text();
+    console.error('Gemini API error response:', errorText);
     throw new Error(`Gemini API error: ${response.status}`);
   }
 
@@ -244,21 +262,36 @@ Respond with ONLY valid JSON:
 
   const jsonMatch = text.match(/\{[\s\S]*\}/);
   if (!jsonMatch) {
+    console.error('No JSON in Gemini response:', text.substring(0, 500));
     throw new Error('No JSON in response');
   }
 
-  const parsed = JSON.parse(jsonMatch[0]);
+  let parsed;
+  try {
+    parsed = JSON.parse(jsonMatch[0]);
+  } catch (parseErr) {
+    console.error('JSON parse error:', parseErr, 'Text:', jsonMatch[0].substring(0, 500));
+    throw new Error('Failed to parse JSON response');
+  }
 
+  if (!parsed.analyses || !Array.isArray(parsed.analyses)) {
+    console.error('Invalid response structure:', parsed);
+    throw new Error('Invalid response structure');
+  }
+
+  // Map analyses back to articles by order (1-indexed articleNum)
   return articles.map((article, i) => {
-    const analysis = parsed.analyses?.find((a: { index: number }) => a.index === indices[i]);
+    // Try to find by articleNum first, then fall back to array position
+    const analysis = parsed.analyses.find((a: { articleNum?: number }) => a.articleNum === i + 1)
+      || parsed.analyses[i];
 
-    if (analysis) {
+    if (analysis && analysis.summary) {
       return {
         ...article,
         region: analysis.region || inferRegion(article.category),
         analysis: {
           summary: analysis.summary || '',
-          sectors: analysis.sectors || [],
+          sectors: Array.isArray(analysis.sectors) ? analysis.sectors : [],
           overallSentiment: analysis.overallSentiment || 'Neutral',
           keyInsight: analysis.keyInsight || '',
         },
@@ -271,25 +304,87 @@ Respond with ONLY valid JSON:
       };
     }
 
-    return createDefaultAnalysis(article);
+    // If no analysis found for this article, create fallback
+    return createFallbackAnalysis(article, 'Analysis incomplete');
   });
 }
 
-function createDefaultAnalysis(article: Article): AnalyzedArticle {
+// Keyword-based fallback analysis when AI is unavailable
+function createFallbackAnalysis(article: Article, reason: string): AnalyzedArticle {
+  const title = article.title.toLowerCase();
+  const description = (article.description || '').toLowerCase();
+  const text = `${title} ${description}`;
+
+  // Infer sentiment from keywords
+  const bullishKeywords = ['surge', 'soar', 'rally', 'gain', 'rise', 'jump', 'boost', 'growth', 'profit', 'beat', 'record high', 'bullish', 'optimis'];
+  const bearishKeywords = ['fall', 'drop', 'crash', 'plunge', 'decline', 'loss', 'cut', 'recession', 'crisis', 'fear', 'concern', 'warn', 'bearish', 'pessimis'];
+
+  let sentiment: 'Bullish' | 'Bearish' | 'Mixed' | 'Neutral' = 'Neutral';
+  const hasBullish = bullishKeywords.some(k => text.includes(k));
+  const hasBearish = bearishKeywords.some(k => text.includes(k));
+
+  if (hasBullish && hasBearish) sentiment = 'Mixed';
+  else if (hasBullish) sentiment = 'Bullish';
+  else if (hasBearish) sentiment = 'Bearish';
+
+  // Infer sectors from keywords
+  const sectors: SectorImpact[] = [];
+  const sectorKeywords: Record<string, string[]> = {
+    'Technology': ['tech', 'ai', 'software', 'chip', 'semiconductor', 'apple', 'google', 'microsoft', 'nvidia', 'meta'],
+    'Financials': ['bank', 'fed', 'interest rate', 'loan', 'credit', 'jpmorgan', 'goldman', 'finance'],
+    'Energy': ['oil', 'gas', 'energy', 'opec', 'crude', 'exxon', 'chevron', 'renewable', 'solar'],
+    'Healthcare': ['health', 'drug', 'pharma', 'fda', 'medical', 'vaccine', 'pfizer', 'hospital'],
+    'Defense': ['defense', 'military', 'pentagon', 'weapon', 'nato', 'lockheed', 'raytheon', 'war'],
+    'Consumer': ['retail', 'consumer', 'walmart', 'amazon', 'spending', 'sales'],
+    'Industrials': ['manufacturing', 'industrial', 'factory', 'boeing', 'caterpillar'],
+    'Commodities': ['gold', 'silver', 'copper', 'metal', 'commodity', 'mining'],
+  };
+
+  for (const [sector, keywords] of Object.entries(sectorKeywords)) {
+    if (keywords.some(k => text.includes(k))) {
+      sectors.push({
+        sector,
+        impact: sentiment === 'Neutral' ? 'Uncertain' : sentiment === 'Mixed' ? 'Uncertain' : sentiment,
+        reasoning: reason,
+        tickers: [],
+        timeframe: 'Short-term',
+        confidence: 'Low',
+      });
+    }
+  }
+
+  // Default to at least one sector based on category
+  if (sectors.length === 0) {
+    const categoryMap: Record<string, string> = {
+      'Economy': 'Financials',
+      'Markets': 'Financials',
+      'Policy': 'Industrials',
+      'Politics': 'Defense',
+    };
+    sectors.push({
+      sector: categoryMap[article.category] || 'Financials',
+      impact: 'Uncertain',
+      reasoning: reason,
+      tickers: [],
+      timeframe: 'Short-term',
+      confidence: 'Low',
+    });
+  }
+
   return {
     ...article,
     region: inferRegion(article.category),
     analysis: {
-      summary: 'Analysis pending',
-      sectors: [],
-      overallSentiment: 'Neutral',
+      summary: reason,
+      sectors,
+      overallSentiment: sentiment,
       keyInsight: '',
     },
     implications: {
       gold: 'Neutral',
       silver: 'Neutral',
       rareMinerals: 'Neutral',
-      stockMarkets: 'Neutral',
+      stockMarkets: sentiment === 'Neutral' ? 'Neutral' : sentiment,
     },
   };
 }
