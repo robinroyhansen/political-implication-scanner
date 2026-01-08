@@ -29,6 +29,7 @@ interface Implications {
 }
 
 interface AnalyzedArticle {
+  id?: string;
   title: string;
   source: string;
   url: string;
@@ -37,6 +38,7 @@ interface AnalyzedArticle {
   category?: string;
   analysis?: Analysis;
   implications: Implications;
+  pending?: boolean; // true when article is fetched but not yet analyzed
 }
 
 interface StockResult {
@@ -460,18 +462,54 @@ const StatsCard = ({ label, value, icon }: { label: string; value: string | numb
   </div>
 );
 
-// Skeleton
-const SkeletonCard = () => (
-  <div className="bg-slate-800/50 border border-slate-700/50 rounded-lg p-5">
-    <div className="h-3 w-32 bg-slate-700 rounded shimmer mb-3"></div>
-    <div className="h-5 w-full bg-slate-700 rounded shimmer mb-2"></div>
-    <div className="h-5 w-3/4 bg-slate-700 rounded shimmer mb-4"></div>
-    <div className="flex gap-2 pt-3 border-t border-slate-700/50">
-      <div className="h-6 w-20 bg-slate-700 rounded shimmer"></div>
-      <div className="h-6 w-20 bg-slate-700 rounded shimmer"></div>
+// Skeleton / Pending Card
+const SkeletonCard = ({ article }: { article?: AnalyzedArticle }) => {
+  if (article) {
+    // Pending article - show title but with shimmer for analysis
+    const timeAgo = (dateString: string) => {
+      const diffMs = Date.now() - new Date(dateString).getTime();
+      const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+      const diffDays = Math.floor(diffHours / 24);
+      if (diffDays > 0) return `${diffDays}d ago`;
+      if (diffHours > 0) return `${diffHours}h ago`;
+      return 'Just now';
+    };
+
+    return (
+      <article className="bg-slate-800/50 border border-slate-700/50 rounded-lg p-5 animate-fade-in">
+        <div className="flex items-center gap-2 text-xs text-slate-400 mb-2">
+          <span className="font-medium text-amber-500">{article.source}</span>
+          <span>•</span>
+          <span>{timeAgo(article.publishedAt)}</span>
+          <span>•</span>
+          <span className="text-slate-500 flex items-center gap-1">
+            <span className="w-2 h-2 bg-slate-500 rounded-full animate-pulse"></span>
+            Analyzing...
+          </span>
+        </div>
+        <h3 className="font-serif text-lg font-semibold text-slate-100 line-clamp-2 mb-2">{article.title}</h3>
+        <div className="h-4 w-full bg-slate-700 rounded shimmer mb-2"></div>
+        <div className="h-4 w-2/3 bg-slate-700 rounded shimmer mb-4"></div>
+        <div className="flex gap-2 pt-3 border-t border-slate-700/50">
+          <div className="h-6 w-20 bg-slate-700 rounded shimmer"></div>
+          <div className="h-6 w-20 bg-slate-700 rounded shimmer"></div>
+        </div>
+      </article>
+    );
+  }
+
+  return (
+    <div className="bg-slate-800/50 border border-slate-700/50 rounded-lg p-5">
+      <div className="h-3 w-32 bg-slate-700 rounded shimmer mb-3"></div>
+      <div className="h-5 w-full bg-slate-700 rounded shimmer mb-2"></div>
+      <div className="h-5 w-3/4 bg-slate-700 rounded shimmer mb-4"></div>
+      <div className="flex gap-2 pt-3 border-t border-slate-700/50">
+        <div className="h-6 w-20 bg-slate-700 rounded shimmer"></div>
+        <div className="h-6 w-20 bg-slate-700 rounded shimmer"></div>
+      </div>
     </div>
-  </div>
-);
+  );
+};
 
 // Main Component
 export default function Home() {
@@ -479,6 +517,7 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<GroupedArticles | null>(null);
   const [allArticles, setAllArticles] = useState<AnalyzedArticle[]>([]);
+  const [pendingArticles, setPendingArticles] = useState<AnalyzedArticle[]>([]);
   const [total, setTotal] = useState(0);
   const [lastScan, setLastScan] = useState<Date | null>(null);
   const [activeRegion, setActiveRegion] = useState<Region>('All');
@@ -489,6 +528,8 @@ export default function Home() {
   const [summary, setSummary] = useState('');
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [progress, setProgress] = useState('');
+  const [scanProgress, setScanProgress] = useState({ current: 0, total: 0 });
+  const eventSourceRef = useRef<EventSource | null>(null);
 
   // Load watchlist and scan history on mount
   useEffect(() => {
@@ -546,44 +587,115 @@ export default function Home() {
     }
   };
 
-  // Scan news
-  const scanNews = async () => {
+  // Stop scan
+  const stopScan = useCallback(() => {
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+      eventSourceRef.current = null;
+    }
+    setLoading(false);
+    setProgress('Scan stopped');
+    setTimeout(() => setProgress(''), 2000);
+  }, []);
+
+  // Scan news with SSE streaming
+  const scanNews = useCallback(() => {
+    // Clean up any existing connection
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+    }
+
     setLoading(true);
     setError(null);
-    setProgress('Fetching news...');
+    setProgress('Connecting...');
+    setScanProgress({ current: 0, total: 0 });
+    setPendingArticles([]);
+    setAllArticles([]);
+    setData(null);
+    setSummary('');
 
-    try {
-      const newsRes = await fetch('/api/news');
-      if (!newsRes.ok) throw new Error('Failed to fetch news');
-      const { articles } = await newsRes.json();
+    const analyzedArticlesMap = new Map<string, AnalyzedArticle>();
 
-      setProgress(`Analyzing ${articles.length} articles...`);
+    const eventSource = new EventSource('/api/scan-stream');
+    eventSourceRef.current = eventSource;
 
-      const analyzeRes = await fetch('/api/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ articles }),
-      });
-      if (!analyzeRes.ok) throw new Error('Analysis failed');
+    eventSource.addEventListener('status', (e) => {
+      const data = JSON.parse(e.data);
+      setProgress(data.message);
+      if (data.total) {
+        setScanProgress(prev => ({ ...prev, total: data.total }));
+      }
+    });
 
-      const result = await analyzeRes.json();
-      setData(result.grouped);
-      setTotal(result.total);
+    eventSource.addEventListener('articles', (e) => {
+      const data = JSON.parse(e.data);
+      // Mark all articles as pending initially
+      const pending = data.articles.map((a: AnalyzedArticle) => ({
+        ...a,
+        pending: true,
+        region: a.region || 'Americas',
+        implications: a.implications || { gold: 'Neutral', silver: 'Neutral', rareMinerals: 'Neutral', stockMarkets: 'Neutral' },
+      }));
+      setPendingArticles(pending);
+      setTotal(data.total);
+      setScanProgress(prev => ({ ...prev, total: data.total }));
+    });
+
+    eventSource.addEventListener('analyzed', (e) => {
+      const data = JSON.parse(e.data);
+      const article = data.article as AnalyzedArticle;
+
+      // Store in map for deduplication
+      analyzedArticlesMap.set(article.id || article.url, { ...article, pending: false });
+
+      // Update progress
+      setScanProgress(data.progress);
+      setProgress(`Analyzing: ${data.progress.current}/${data.progress.total}`);
+
+      // Update pending articles - mark this one as analyzed
+      setPendingArticles(prev =>
+        prev.map(a => (a.id || a.url) === (article.id || article.url) ? { ...article, pending: false } : a)
+      );
+
+      // Update allArticles with analyzed ones
+      setAllArticles(Array.from(analyzedArticlesMap.values()));
+
+      // Group by region for display
+      const articles = Array.from(analyzedArticlesMap.values());
+      const grouped: GroupedArticles = {
+        Americas: articles.filter(a => a.region === 'Americas'),
+        Europe: articles.filter(a => a.region === 'Europe'),
+        Asia: articles.filter(a => a.region === 'Asia'),
+        'Middle East': articles.filter(a => a.region === 'Middle East'),
+        Africa: articles.filter(a => a.region === 'Africa'),
+      };
+      setData(grouped);
+    });
+
+    eventSource.addEventListener('complete', async (e) => {
+      const data = JSON.parse(e.data);
+      eventSource.close();
+      eventSourceRef.current = null;
+
+      setLoading(false);
       setLastScan(new Date());
+      setPendingArticles([]); // Clear pending, all done
+      setProgress('Generating briefing...');
 
-      // Flatten articles for summary
-      const flatArticles = Object.values(result.grouped as GroupedArticles).flat();
-      setAllArticles(flatArticles);
+      // Final articles from map
+      const finalArticles = Array.from(analyzedArticlesMap.values());
+      setAllArticles(finalArticles);
+      setTotal(data.total);
 
       // Calculate sentiments
-      const overallSentiment = calculateSentiment(flatArticles);
-      const americasSentiment = calculateSentiment(flatArticles.filter(a => a.region === 'Americas'));
-      const europeSentiment = calculateSentiment(flatArticles.filter(a => a.region === 'Europe'));
-      const asiaSentiment = calculateSentiment(flatArticles.filter(a => ['Asia', 'Middle East', 'Africa'].includes(a.region)));
+      const overallSentiment = calculateSentiment(finalArticles);
+      const americasSentiment = calculateSentiment(finalArticles.filter(a => a.region === 'Americas'));
+      const europeSentiment = calculateSentiment(finalArticles.filter(a => a.region === 'Europe'));
+      const asiaSentiment = calculateSentiment(finalArticles.filter(a => ['Asia', 'Middle East', 'Africa'].includes(a.region)));
 
       // Save scan to Supabase
       const savedScan = await saveScan({
-        total_articles: result.total,
+        total_articles: data.total,
         sentiment_score: overallSentiment,
         americas_sentiment: americasSentiment,
         europe_sentiment: europeSentiment,
@@ -595,16 +707,31 @@ export default function Home() {
       }
 
       // Generate summary
-      setProgress('Generating briefing...');
-      await generateSummary(flatArticles);
+      await generateSummary(finalArticles);
       setProgress('');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
-      setProgress('');
-    } finally {
+    });
+
+    eventSource.addEventListener('error', (e) => {
+      const data = e instanceof MessageEvent ? JSON.parse(e.data) : null;
+      eventSource.close();
+      eventSourceRef.current = null;
       setLoading(false);
-    }
-  };
+      setError(data?.message || 'Connection error');
+      setProgress('');
+    });
+
+    eventSource.onerror = () => {
+      if (eventSource.readyState === EventSource.CLOSED) {
+        // Normal close, ignore
+        return;
+      }
+      eventSource.close();
+      eventSourceRef.current = null;
+      setLoading(false);
+      setError('Connection lost');
+      setProgress('');
+    };
+  }, []);
 
   // Filter articles
   const getFilteredArticles = (): AnalyzedArticle[] => {
@@ -650,22 +777,49 @@ export default function Home() {
           </div>
 
           <div className="flex flex-col sm:flex-row items-start gap-4">
-            <button
-              onClick={scanNews}
-              disabled={loading}
-              className={`px-6 py-3 rounded-lg font-semibold transition-all ${loading ? 'bg-slate-700 text-slate-400 cursor-not-allowed' : 'bg-gradient-gold text-slate-900 hover:shadow-lg hover:shadow-amber-500/25'}`}
-            >
-              {loading ? (
-                <span className="flex items-center gap-2"><LoadingSpinner size={4} />{progress}</span>
-              ) : (
-                <span className="flex items-center gap-2">
-                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
-                  Scan News
-                </span>
-              )}
-            </button>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={scanNews}
+                disabled={loading}
+                className={`px-6 py-3 rounded-lg font-semibold transition-all ${loading ? 'bg-slate-700 text-slate-400 cursor-not-allowed' : 'bg-gradient-gold text-slate-900 hover:shadow-lg hover:shadow-amber-500/25'}`}
+              >
+                {loading ? (
+                  <span className="flex items-center gap-2"><LoadingSpinner size={4} />Scanning...</span>
+                ) : (
+                  <span className="flex items-center gap-2">
+                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+                    Scan News
+                  </span>
+                )}
+              </button>
 
-            {lastScan && (
+              {loading && (
+                <button
+                  onClick={stopScan}
+                  className="px-4 py-3 rounded-lg font-semibold bg-red-500/20 text-red-400 border border-red-500/30 hover:bg-red-500/30 transition-all"
+                >
+                  Stop
+                </button>
+              )}
+            </div>
+
+            {/* Progress Bar */}
+            {loading && scanProgress.total > 0 && (
+              <div className="flex-1 max-w-md">
+                <div className="flex items-center justify-between text-sm text-slate-400 mb-1">
+                  <span>{progress}</span>
+                  <span>{Math.round((scanProgress.current / scanProgress.total) * 100)}%</span>
+                </div>
+                <div className="h-2 bg-slate-700/50 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-gradient-to-r from-amber-500 to-amber-400 transition-all duration-300 ease-out"
+                    style={{ width: `${(scanProgress.current / scanProgress.total) * 100}%` }}
+                  ></div>
+                </div>
+              </div>
+            )}
+
+            {(lastScan || total > 0) && !loading && (
               <div className="flex flex-wrap gap-3">
                 <StatsCard label="Articles" value={total} icon={<svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 20H5a2 2 0 01-2-2V6a2 2 0 012-2h10a2 2 0 012 2v1m2 13a2 2 0 01-2-2V7m2 13a2 2 0 002-2V9a2 2 0 00-2-2h-2m-4-3H9M7 16h6M7 8h6v4H7V8z" /></svg>} />
                 {watchlist.length > 0 && <StatsCard label="Watchlist Hits" value={watchlistCount} icon={<svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" /></svg>} />}
@@ -693,8 +847,21 @@ export default function Home() {
           <SummaryReport summary={summary} isLoading={summaryLoading} onRegenerate={() => generateSummary(allArticles)} onCopy={copyReport} />
         )}
 
-        {/* Loading State */}
-        {loading && !data && (
+        {/* Loading State - Show pending articles during scan */}
+        {loading && pendingArticles.length > 0 && (
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+            {pendingArticles.map((article, idx) => (
+              article.pending ? (
+                <SkeletonCard key={article.id || article.url || idx} article={article} />
+              ) : (
+                <NewsCard key={article.id || article.url || idx} article={article} index={idx} isWatchlisted={articleMentionsTicker(article, watchlist)} />
+              )
+            ))}
+          </div>
+        )}
+
+        {/* Initial loading skeleton */}
+        {loading && pendingArticles.length === 0 && !data && (
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
             {[...Array(6)].map((_, i) => <SkeletonCard key={i} />)}
           </div>
