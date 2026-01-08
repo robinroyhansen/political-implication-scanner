@@ -388,7 +388,17 @@ const SummaryReport = ({ summary, isLoading, onRegenerate, onCopy }: { summary: 
 };
 
 // News Card Component
-const NewsCard = ({ article, index, isWatchlisted }: { article: AnalyzedArticle; index: number; isWatchlisted: boolean }) => {
+const NewsCard = ({ article, index, isWatchlisted, isExpanded, onToggleExpand }: {
+  article: AnalyzedArticle;
+  index: number;
+  isWatchlisted: boolean;
+  isExpanded?: boolean;
+  onToggleExpand?: () => void;
+}) => {
+  const [localExpanded, setLocalExpanded] = useState(false);
+  const expanded = isExpanded !== undefined ? isExpanded : localExpanded;
+  const toggleExpand = onToggleExpand || (() => setLocalExpanded(prev => !prev));
+
   const timeAgo = (dateString: string) => {
     const diffMs = Date.now() - new Date(dateString).getTime();
     const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
@@ -406,38 +416,147 @@ const NewsCard = ({ article, index, isWatchlisted }: { article: AnalyzedArticle;
     Neutral: { label: 'Neutral', color: 'text-slate-400' },
   }[sentiment || 'Neutral'] || { label: 'Neutral', color: 'text-slate-400' };
 
+  const hasMoreContent = (article.analysis?.summary && article.analysis.summary.length > 120) ||
+    (article.analysis?.sectors && article.analysis.sectors.length > 2) ||
+    article.analysis?.keyInsight;
+
+  // Get all unique tickers from sectors
+  const allTickers = article.analysis?.sectors?.flatMap(s => s.tickers || []).filter((v, i, a) => a.indexOf(v) === i) || [];
+
   return (
     <article
-      className={`group bg-slate-800/50 border rounded-lg p-5 hover:bg-slate-800/80 transition-all duration-300 animate-fade-in flex flex-col ${
+      className={`group border rounded-lg p-5 transition-all duration-300 animate-fade-in flex flex-col cursor-pointer ${
+        expanded ? 'bg-slate-800/80 ring-1 ring-amber-500/30' : 'bg-slate-800/50 hover:bg-slate-800/70'
+      } ${
         isWatchlisted ? 'border-amber-500/50 ring-1 ring-amber-500/20' : 'border-slate-700/50 hover:border-slate-600/50'
       }`}
       style={{ animationDelay: `${index * 30}ms` }}
+      onClick={(e) => {
+        // Don't toggle if clicking a link
+        if ((e.target as HTMLElement).tagName !== 'A') {
+          toggleExpand();
+        }
+      }}
     >
       <div className="flex-1">
-        <div className="flex items-center gap-2 text-xs text-slate-400 mb-2 flex-wrap">
-          {isWatchlisted && <span className="text-amber-400">★</span>}
-          <span className="font-medium text-amber-500">{article.source}</span>
-          <span>•</span>
-          <span>{timeAgo(article.publishedAt)}</span>
-          <span>•</span>
-          <span className={sentimentStyle.color}>● {sentimentStyle.label}</span>
+        {/* Header */}
+        <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center gap-2 text-xs text-slate-400 flex-wrap">
+            {isWatchlisted && <span className="text-amber-400">★</span>}
+            <span className="font-medium text-amber-500">{article.source}</span>
+            <span>•</span>
+            <span>{timeAgo(article.publishedAt)}</span>
+            <span>•</span>
+            <span className={sentimentStyle.color}>● {sentimentStyle.label}</span>
+          </div>
+          {hasMoreContent && (
+            <svg
+              className={`w-4 h-4 text-slate-500 transition-transform duration-300 ${expanded ? 'rotate-180' : ''}`}
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+            </svg>
+          )}
         </div>
-        <a href={article.url} target="_blank" rel="noopener noreferrer" className="block font-serif text-lg font-semibold text-slate-100 group-hover:text-amber-400 transition-colors line-clamp-2 mb-2">
+
+        {/* Title */}
+        <a
+          href={article.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className={`block font-serif text-lg font-semibold text-slate-100 hover:text-amber-400 transition-colors mb-2 ${expanded ? '' : 'line-clamp-2'}`}
+          onClick={(e) => e.stopPropagation()}
+        >
           {article.title}
         </a>
-        {article.analysis?.summary && <p className="text-sm text-slate-400 mb-3 line-clamp-2">{article.analysis.summary}</p>}
-        {article.analysis?.keyInsight && (
-          <div className="text-xs bg-amber-500/10 border border-amber-500/20 rounded px-2 py-1 text-amber-300 mb-3">
+
+        {/* Summary - Expandable */}
+        {article.analysis?.summary && (
+          <div className="mb-3">
+            <p className={`text-sm text-slate-400 transition-all duration-300 ${expanded ? '' : 'line-clamp-2'}`}>
+              {article.analysis.summary}
+            </p>
+            {!expanded && article.analysis.summary.length > 120 && (
+              <button
+                className="text-xs text-amber-500 hover:text-amber-400 mt-1 font-medium"
+                onClick={(e) => { e.stopPropagation(); toggleExpand(); }}
+              >
+                Read more →
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Expanded Content */}
+        <div className={`overflow-hidden transition-all duration-300 ease-in-out ${expanded ? 'max-h-[500px] opacity-100' : 'max-h-0 opacity-0'}`}>
+          {/* Key Insight */}
+          {article.analysis?.keyInsight && (
+            <div className="text-xs bg-amber-500/10 border border-amber-500/20 rounded px-3 py-2 text-amber-300 mb-3">
+              <span className="font-semibold">💡 Key Insight:</span> {article.analysis.keyInsight}
+            </div>
+          )}
+
+          {/* All Tickers */}
+          {allTickers.length > 0 && (
+            <div className="mb-3">
+              <div className="text-xs text-slate-500 uppercase tracking-wider mb-1">Affected Tickers</div>
+              <div className="flex flex-wrap gap-1">
+                {allTickers.map(ticker => (
+                  <span key={ticker} className="px-2 py-0.5 bg-slate-700/50 text-slate-300 text-xs font-mono rounded">
+                    {ticker}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Commodity Implications */}
+          {article.implications && (
+            <div className="grid grid-cols-2 gap-2 mb-3 text-xs">
+              <div className="flex justify-between px-2 py-1 bg-slate-700/30 rounded">
+                <span className="text-slate-500">Gold</span>
+                <span className={article.implications.gold === 'Bullish' ? 'text-emerald-400' : article.implications.gold === 'Bearish' ? 'text-red-400' : 'text-slate-400'}>
+                  {article.implications.gold}
+                </span>
+              </div>
+              <div className="flex justify-between px-2 py-1 bg-slate-700/30 rounded">
+                <span className="text-slate-500">Stocks</span>
+                <span className={article.implications.stockMarkets === 'Bullish' ? 'text-emerald-400' : article.implications.stockMarkets === 'Bearish' ? 'text-red-400' : 'text-slate-400'}>
+                  {article.implications.stockMarkets}
+                </span>
+              </div>
+            </div>
+          )}
+
+          {/* Show less button */}
+          <button
+            className="text-xs text-slate-500 hover:text-slate-400 font-medium"
+            onClick={(e) => { e.stopPropagation(); toggleExpand(); }}
+          >
+            ← Show less
+          </button>
+        </div>
+
+        {/* Key Insight (collapsed view) */}
+        {!expanded && article.analysis?.keyInsight && (
+          <div className="text-xs bg-amber-500/10 border border-amber-500/20 rounded px-2 py-1 text-amber-300 mb-3 line-clamp-1">
             💡 {article.analysis.keyInsight}
           </div>
         )}
       </div>
+
+      {/* Sectors Footer */}
       <div className="mt-auto pt-3 border-t border-slate-700/50">
         {article.analysis?.sectors?.length ? (
           <div className="flex flex-wrap gap-2">
-            {article.analysis.sectors.slice(0, 4).map((sector, idx) => (
+            {(expanded ? article.analysis.sectors : article.analysis.sectors.slice(0, 3)).map((sector, idx) => (
               <ImpactBadge key={`${sector.sector}-${idx}`} sector={sector} />
             ))}
+            {!expanded && article.analysis.sectors.length > 3 && (
+              <span className="px-2 py-1 text-xs text-slate-500">+{article.analysis.sectors.length - 3} more</span>
+            )}
           </div>
         ) : (
           <div className="flex flex-wrap gap-2">
@@ -529,6 +648,8 @@ export default function Home() {
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [progress, setProgress] = useState('');
   const [scanProgress, setScanProgress] = useState({ current: 0, total: 0 });
+  const [expandedCards, setExpandedCards] = useState<Set<string>>(new Set());
+  const [allExpanded, setAllExpanded] = useState(false);
   const eventSourceRef = useRef<EventSource | null>(null);
 
   // Load watchlist and scan history on mount
@@ -850,13 +971,31 @@ export default function Home() {
         {/* Loading State - Show pending articles during scan */}
         {loading && pendingArticles.length > 0 && (
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-            {pendingArticles.map((article, idx) => (
-              article.pending ? (
-                <SkeletonCard key={article.id || article.url || idx} article={article} />
+            {pendingArticles.map((article, idx) => {
+              const cardId = article.id || article.url;
+              return article.pending ? (
+                <SkeletonCard key={cardId || idx} article={article} />
               ) : (
-                <NewsCard key={article.id || article.url || idx} article={article} index={idx} isWatchlisted={articleMentionsTicker(article, watchlist)} />
-              )
-            ))}
+                <NewsCard
+                  key={cardId || idx}
+                  article={article}
+                  index={idx}
+                  isWatchlisted={articleMentionsTicker(article, watchlist)}
+                  isExpanded={expandedCards.has(cardId)}
+                  onToggleExpand={() => {
+                    setExpandedCards(prev => {
+                      const next = new Set(prev);
+                      if (next.has(cardId)) {
+                        next.delete(cardId);
+                      } else {
+                        next.add(cardId);
+                      }
+                      return next;
+                    });
+                  }}
+                />
+              );
+            })}
           </div>
         )}
 
@@ -883,7 +1022,26 @@ export default function Home() {
                   </button>
                 ))}
               </div>
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-3 flex-wrap">
+                {/* Expand/Collapse All */}
+                <button
+                  onClick={() => {
+                    if (allExpanded) {
+                      setExpandedCards(new Set());
+                      setAllExpanded(false);
+                    } else {
+                      const allIds = new Set(filteredArticles.map(a => a.id || a.url));
+                      setExpandedCards(allIds);
+                      setAllExpanded(true);
+                    }
+                  }}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-slate-400 hover:text-slate-200 bg-slate-800/50 border border-slate-700/50 rounded-lg transition-colors"
+                >
+                  <svg className={`w-4 h-4 transition-transform ${allExpanded ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
+                  {allExpanded ? 'Collapse All' : 'Expand All'}
+                </button>
                 {watchlist.length > 0 && (
                   <label className="flex items-center gap-2 text-sm text-slate-400 cursor-pointer">
                     <input type="checkbox" checked={watchlistOnly} onChange={e => setWatchlistOnly(e.target.checked)} className="rounded bg-slate-700 border-slate-600 text-amber-500 focus:ring-amber-500" />
@@ -899,9 +1057,29 @@ export default function Home() {
             {/* Articles */}
             {filteredArticles.length > 0 ? (
               <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-                {filteredArticles.map((article, idx) => (
-                  <NewsCard key={`${article.url}-${idx}`} article={article} index={idx} isWatchlisted={articleMentionsTicker(article, watchlist)} />
-                ))}
+                {filteredArticles.map((article, idx) => {
+                  const cardId = article.id || article.url;
+                  return (
+                    <NewsCard
+                      key={`${cardId}-${idx}`}
+                      article={article}
+                      index={idx}
+                      isWatchlisted={articleMentionsTicker(article, watchlist)}
+                      isExpanded={expandedCards.has(cardId)}
+                      onToggleExpand={() => {
+                        setExpandedCards(prev => {
+                          const next = new Set(prev);
+                          if (next.has(cardId)) {
+                            next.delete(cardId);
+                          } else {
+                            next.add(cardId);
+                          }
+                          return next;
+                        });
+                      }}
+                    />
+                  );
+                })}
               </div>
             ) : (
               <div className="text-center py-12 text-slate-500">
