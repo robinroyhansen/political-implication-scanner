@@ -17,24 +17,14 @@ interface Article {
   category: string;
 }
 
-// Weighted search queries - 70% US/EU financial, 30% global political
+// Simplified queries - fewer requests to avoid timeouts
 const SEARCH_QUERIES = [
-  // US/EU Financial & Economic (70% weight - ~105 articles)
-  { query: 'Federal Reserve interest rates economy', pageSize: 20, category: 'US Economy' },
-  { query: 'ECB European Central Bank monetary policy', pageSize: 15, category: 'EU Economy' },
-  { query: 'stock market earnings quarterly results', pageSize: 15, category: 'Earnings' },
-  { query: 'trade policy tariffs sanctions', pageSize: 15, category: 'Trade Policy' },
-  { query: 'oil gas energy prices OPEC', pageSize: 12, category: 'Energy' },
-  { query: 'tech regulation AI policy antitrust', pageSize: 12, category: 'Tech Policy' },
-  { query: 'defense spending military budget NATO', pageSize: 10, category: 'Defense' },
-  { query: 'banking regulation financial policy', pageSize: 6, category: 'Financial Regulation' },
-
-  // Global Political (30% weight - ~45 articles)
-  { query: 'US politics Congress legislation', pageSize: 15, category: 'US Politics' },
-  { query: 'European Union policy Brussels', pageSize: 10, category: 'EU Politics' },
-  { query: 'China economy trade technology', pageSize: 10, category: 'China' },
-  { query: 'Middle East conflict oil geopolitics', pageSize: 5, category: 'Middle East' },
-  { query: 'emerging markets Brazil India economy', pageSize: 5, category: 'Emerging Markets' },
+  // Financial/Economic (priority)
+  { query: 'Federal Reserve ECB interest rates monetary policy', pageSize: 40, category: 'Economy' },
+  { query: 'stock market earnings trade tariffs sanctions', pageSize: 35, category: 'Markets' },
+  { query: 'tech regulation AI policy defense spending energy', pageSize: 35, category: 'Policy' },
+  // Political
+  { query: 'US Congress European Union China geopolitics', pageSize: 40, category: 'Politics' },
 ];
 
 export async function GET() {
@@ -88,51 +78,15 @@ export async function GET() {
       }
     }
 
-    // Sort by published date (newest first) and limit to 150
+    // Sort by published date (newest first) and limit to 100
     const sortedArticles = allArticles
       .sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime())
-      .slice(0, 150);
-
-    // Apply region weighting by reordering
-    // Americas: 40%, Europe: 40%, Asia/ME/Africa: 20%
-    const americas = sortedArticles.filter(a =>
-      ['US Economy', 'US Politics', 'Earnings', 'Trade Policy', 'Defense', 'Tech Policy'].includes(a.category)
-    );
-    const europe = sortedArticles.filter(a =>
-      ['EU Economy', 'EU Politics', 'Financial Regulation'].includes(a.category)
-    );
-    const other = sortedArticles.filter(a =>
-      ['China', 'Middle East', 'Emerging Markets', 'Energy'].includes(a.category)
-    );
-
-    // Interleave to maintain balance
-    const weighted: Article[] = [];
-    const maxLen = Math.max(americas.length, europe.length, other.length);
-
-    for (let i = 0; i < maxLen; i++) {
-      // Add 2 Americas, 2 Europe, 1 Other per cycle (40/40/20 ratio)
-      if (americas[i * 2]) weighted.push(americas[i * 2]);
-      if (americas[i * 2 + 1]) weighted.push(americas[i * 2 + 1]);
-      if (europe[i * 2]) weighted.push(europe[i * 2]);
-      if (europe[i * 2 + 1]) weighted.push(europe[i * 2 + 1]);
-      if (other[i]) weighted.push(other[i]);
-    }
-
-    // Fill remaining with any leftover articles
-    const weightedUrls = new Set(weighted.map(a => a.url));
-    for (const article of sortedArticles) {
-      if (!weightedUrls.has(article.url) && weighted.length < 150) {
-        weighted.push(article);
-      }
-    }
+      .slice(0, 100);
 
     return NextResponse.json({
-      articles: weighted.slice(0, 150),
+      articles: sortedArticles,
       meta: {
-        total: weighted.length,
-        americas: americas.length,
-        europe: europe.length,
-        other: other.length,
+        total: sortedArticles.length,
       }
     });
   } catch (error) {
